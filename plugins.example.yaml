@@ -1,0 +1,67 @@
+# プラグイン設定例
+minecraft_version: "1.20.1"
+
+# ダウンロード先ディレクトリ
+download_dir: "./downloads"
+
+# プラグインリスト
+plugins:
+  # Spigotからダウンロード
+  - name: "EssentialsX"
+    source: "spigot"
+    resource_id: "9089"
+
+  - name: "Vault"
+    source: "spigot"
+    resource_id: "34315"
+
+  # Modrinthからダウンロード
+  - name: "LuckPerms"
+    source: "modrinth"
+    project_id: "luckperms"
+    # Modrinthでは特定のバージョンを指定可能（オプション）
+    # version: "5.4.102"
+
+  - name: "Chunky"
+    source: "modrinth"
+    project_id: "chunky"
+
+  # URLから直接ダウンロード
+  - name: "CustomPlugin"
+    source: "url"
+    url: "https://example.com/plugins/CustomPlugin-1.0.0.jar"
+    # filename: "CustomPlugin-1.0.0.jar"  # オプション: ファイル名を指定（省略時はURLから推測）
+
+  # GitHub Releasesから最新版
+  - name: "MyPlugin"
+    source: "github"
+    repo: "username/repository"  # GitHubリポジトリ（owner/repo形式）
+    tag: "latest"  # "latest"または特定のタグ（例: "v1.0.0"）
+    # asset_pattern: ".*\\.jar$"  # オプション: assetの正規表現パターン
+    # filename: "MyPlugin.jar"  # オプション: 保存するファイル名
+
+# Pterodactyl SFTP設定
+sftp:
+  host: "sftp.example.com"
+  port: 2022
+  username: "your-username"
+  password: "your-password"
+  # または秘密鍵を使用
+  # private_key_path: "~/.ssh/id_rsa"
+  remote_path: "/plugins"
+
+# クリーンアップ設定
+cleanup:
+  # 古いプラグインを自動削除するか
+  enabled: true
+
+  # 保持するファイルのパターン（正規表現）
+  # 新しくダウンロードしたファイル以外で、これらのパターンに一致するファイルは削除されません
+  keep_patterns:
+    - "^CustomPlugin-.*\\.jar$"  # カスタムプラグインは保持
+    - "^DoNotDelete.*\\.jar$"     # 削除しないプラグイン
+
+  # ダウンロードしたプラグインの古いバージョンを自動削除
+  # trueの場合、例えば EssentialsX-2.20.0.jar があって EssentialsX-2.20.1.jar をダウンロードした場合、
+  # 古い 2.20.0 を削除します
+  remove_old_versions: true

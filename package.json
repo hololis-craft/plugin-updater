@@ -1,0 +1,22 @@
+{
+  "name": "plugin-updater",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun index.ts",
+    "update": "bun index.ts plugins.yaml"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@types/ssh2-sftp-client": "^9.0.6",
+    "ssh2-sftp-client": "^12.0.1",
+    "yaml": "^2.8.2",
+    "zod": "^4.3.6"
+  }
+}
