@@ -8,6 +8,36 @@ import { z } from "zod";
 
 const LOADER_PREFERENCE = ["paper", "purpur", "bukkit", "spigot"];
 
+// ダウンロードキャッシュ
+interface PluginCacheEntry {
+  version: string;
+  filename: string;
+  downloaded_at: string;
+}
+
+type PluginCache = Record<string, PluginCacheEntry>;
+
+async function loadCache(downloadDir: string): Promise<PluginCache> {
+  const cachePath = join(downloadDir, ".plugin-cache.json");
+  try {
+    const file = Bun.file(cachePath);
+    if (await file.exists()) {
+      return (await file.json()) as PluginCache;
+    }
+  } catch {
+    // キャッシュが壊れている場合は無視
+  }
+  return {};
+}
+
+async function saveCache(
+  downloadDir: string,
+  cache: PluginCache,
+): Promise<void> {
+  const cachePath = join(downloadDir, ".plugin-cache.json");
+  await Bun.write(cachePath, JSON.stringify(cache, null, 2));
+}
+
 // Zodスキーマ定義
 const ModrinthPluginSchema = z.object({
   name: z.string(),
@@ -153,14 +183,22 @@ interface SpigetResource {
   };
 }
 
+// ダウンロード結果
+interface DownloadResult {
+  filePath: string;
+  version: string;
+  filename: string;
+}
+
 // Modrinth APIからプラグインをダウンロード
 async function downloadFromModrinth(
   plugin: ModrinthPlugin,
   minecraftVersion: string,
   loaderPreference: string[],
   downloadDir: string,
-): Promise<string | null> {
-  console.log(`📦 Modrinth: ${plugin.name}をダウンロード中...`);
+  cache: PluginCache,
+): Promise<DownloadResult | null> {
+  console.log(`📦 Modrinth: ${plugin.name}を確認中...`);
 
   try {
     // バージョン一覧を取得
@@ -212,6 +250,18 @@ async function downloadFromModrinth(
     }
     const downloadUrl = file.url;
     const filename = file.filename;
+    const versionKey = `modrinth:${plugin.project_id}`;
+    const versionId = targetVersion.id;
+
+    // キャッシュチェック: バージョンが同じでファイルが存在すればスキップ
+    const cached = cache[versionKey];
+    if (cached && cached.version === versionId) {
+      const cachedPath = join(downloadDir, cached.filename);
+      if (await Bun.file(cachedPath).exists()) {
+        console.log(`⏭️  ${plugin.name} は最新です (${targetVersion.version_number})`);
+        return { filePath: cachedPath, version: versionId, filename: cached.filename };
+      }
+    }
 
     console.log(`   バージョン: ${targetVersion.version_number}`);
     console.log(`   ファイル: ${filename}`);
@@ -229,7 +279,14 @@ async function downloadFromModrinth(
     await Bun.write(filePath, buffer);
     console.log(`✅ ${plugin.name} をダウンロードしました: ${filename}`);
 
-    return filePath;
+    // キャッシュ更新
+    cache[versionKey] = {
+      version: versionId,
+      filename,
+      downloaded_at: new Date().toISOString(),
+    };
+
+    return { filePath, version: versionId, filename };
   } catch (error) {
     console.error(`❌ ${plugin.name} のダウンロードエラー:`, error);
     return null;
@@ -240,8 +297,9 @@ async function downloadFromModrinth(
 async function downloadFromSpigot(
   plugin: SpigotPlugin,
   downloadDir: string,
-): Promise<string | null> {
-  console.log(`📦 Spigot: ${plugin.name}をダウンロード中...`);
+  cache: PluginCache,
+): Promise<DownloadResult | null> {
+  console.log(`📦 Spigot: ${plugin.name}を確認中...`);
 
   try {
     const resourceId = plugin.resource_id;
@@ -256,6 +314,20 @@ async function downloadFromSpigot(
     }
 
     const resource = (await resourceRes.json()) as SpigetResource;
+    const versionKey = `spigot:${resourceId}`;
+    const versionId = String(resource.version.id);
+    const filename = `${plugin.name}-${resource.version.id}.jar`;
+
+    // キャッシュチェック
+    const cached = cache[versionKey];
+    if (cached && cached.version === versionId) {
+      const cachedPath = join(downloadDir, cached.filename);
+      if (await Bun.file(cachedPath).exists()) {
+        console.log(`⏭️  ${plugin.name} は最新です (${resource.tag})`);
+        return { filePath: cachedPath, version: versionId, filename: cached.filename };
+      }
+    }
+
     console.log(`   バージョン: ${resource.tag}`);
 
     // ダウンロード
@@ -272,13 +344,19 @@ async function downloadFromSpigot(
     }
 
     const buffer = await fileRes.arrayBuffer();
-    const filename = `${plugin.name}-${resource.version.id}.jar`;
     const filePath = join(downloadDir, filename);
 
     await Bun.write(filePath, buffer);
     console.log(`✅ ${plugin.name} をダウンロードしました: ${filename}`);
 
-    return filePath;
+    // キャッシュ更新
+    cache[versionKey] = {
+      version: versionId,
+      filename,
+      downloaded_at: new Date().toISOString(),
+    };
+
+    return { filePath, version: versionId, filename };
   } catch (error) {
     console.error(`❌ ${plugin.name} のダウンロードエラー:`, error);
     return null;
@@ -289,17 +367,59 @@ async function downloadFromSpigot(
 async function downloadFromUrl(
   plugin: UrlPlugin,
   downloadDir: string,
-): Promise<string | null> {
-  console.log(`📦 URL: ${plugin.name}をダウンロード中...`);
+  cache: PluginCache,
+): Promise<DownloadResult | null> {
+  console.log(`📦 URL: ${plugin.name}を確認中...`);
 
   try {
+    // ファイル名を決定
+    let filename: string;
+    if (plugin.filename) {
+      filename = plugin.filename;
+    } else {
+      const urlPath = new URL(plugin.url).pathname;
+      const urlFilename = urlPath.split("/").pop();
+
+      if (urlFilename && urlFilename.endsWith(".jar")) {
+        filename = urlFilename;
+      } else {
+        filename = `${plugin.name}.jar`;
+      }
+    }
+
+    // HEADリクエストでETag/Last-Modifiedを確認
+    const versionKey = `url:${plugin.name}`;
+    let versionId = "";
+
+    const headRes = await fetch(plugin.url, {
+      method: "HEAD",
+      headers: { "User-Agent": "PluginUpdater/1.0" },
+    });
+
+    if (headRes.ok) {
+      const etag = headRes.headers.get("etag");
+      const lastModified = headRes.headers.get("last-modified");
+      const contentLength = headRes.headers.get("content-length");
+      versionId = etag || lastModified || contentLength || "";
+    }
+
+    // キャッシュチェック（バージョンIDが取得できた場合のみ）
+    if (versionId) {
+      const cached = cache[versionKey];
+      if (cached && cached.version === versionId) {
+        const cachedPath = join(downloadDir, cached.filename);
+        if (await Bun.file(cachedPath).exists()) {
+          console.log(`⏭️  ${plugin.name} は最新です`);
+          return { filePath: cachedPath, version: versionId, filename: cached.filename };
+        }
+      }
+    }
+
     console.log(`   URL: ${plugin.url}`);
 
     // ダウンロード
     const fileRes = await fetch(plugin.url, {
-      headers: {
-        "User-Agent": "PluginUpdater/1.0",
-      },
+      headers: { "User-Agent": "PluginUpdater/1.0" },
     });
 
     if (!fileRes.ok) {
@@ -311,22 +431,11 @@ async function downloadFromUrl(
 
     const buffer = await fileRes.arrayBuffer();
 
-    // ファイル名を決定
-    let filename: string;
-    if (plugin.filename) {
-      // 設定で指定されたファイル名を使用
-      filename = plugin.filename;
-    } else {
-      // URLからファイル名を抽出
-      const urlPath = new URL(plugin.url).pathname;
-      const urlFilename = urlPath.split("/").pop();
-
-      if (urlFilename && urlFilename.endsWith(".jar")) {
-        filename = urlFilename;
-      } else {
-        // ファイル名が取得できない場合はプラグイン名を使用
-        filename = `${plugin.name}.jar`;
-      }
+    // versionIdがHEADで取れなかった場合、レスポンスヘッダーから取得
+    if (!versionId) {
+      const etag = fileRes.headers.get("etag");
+      const lastModified = fileRes.headers.get("last-modified");
+      versionId = etag || lastModified || String(buffer.byteLength);
     }
 
     console.log(`   ファイル: ${filename}`);
@@ -335,7 +444,14 @@ async function downloadFromUrl(
     await Bun.write(filePath, buffer);
     console.log(`✅ ${plugin.name} をダウンロードしました: ${filename}`);
 
-    return filePath;
+    // キャッシュ更新
+    cache[versionKey] = {
+      version: versionId,
+      filename,
+      downloaded_at: new Date().toISOString(),
+    };
+
+    return { filePath, version: versionId, filename };
   } catch (error) {
     console.error(`❌ ${plugin.name} のダウンロードエラー:`, error);
     return null;
@@ -346,13 +462,12 @@ async function downloadFromUrl(
 async function downloadFromGitHub(
   plugin: GitHubPlugin,
   downloadDir: string,
-): Promise<string | null> {
-  console.log(`📦 GitHub: ${plugin.name}をダウンロード中...`);
+  cache: PluginCache,
+): Promise<DownloadResult | null> {
+  console.log(`📦 GitHub: ${plugin.name}を確認中...`);
 
   try {
     const tag = plugin.tag || "latest";
-    console.log(`   リポジトリ: ${plugin.repo}`);
-    console.log(`   タグ: ${tag}`);
 
     // GitHub API URLを構築
     let apiUrl: string;
@@ -383,9 +498,6 @@ async function downloadFromGitHub(
     }
 
     const release = (await releaseRes.json()) as GitHubRelease;
-    console.log(
-      `   リリース: ${release.tag_name} (${release.name || "名前なし"})`,
-    );
 
     // assetsから.jarファイルを検索
     const assetPattern = plugin.asset_pattern
@@ -407,6 +519,24 @@ async function downloadFromGitHub(
       return null;
     }
 
+    const filename = plugin.filename || jarAsset.name;
+    const versionKey = `github:${plugin.repo}`;
+    const versionId = `${release.id}:${jarAsset.id}`;
+
+    // キャッシュチェック
+    const cached = cache[versionKey];
+    if (cached && cached.version === versionId) {
+      const cachedPath = join(downloadDir, cached.filename);
+      if (await Bun.file(cachedPath).exists()) {
+        console.log(`⏭️  ${plugin.name} は最新です (${release.tag_name})`);
+        return { filePath: cachedPath, version: versionId, filename: cached.filename };
+      }
+    }
+
+    console.log(`   リポジトリ: ${plugin.repo}`);
+    console.log(
+      `   リリース: ${release.tag_name} (${release.name || "名前なし"})`,
+    );
     console.log(`   アセット: ${jarAsset.name}`);
     console.log(`   サイズ: ${(jarAsset.size / 1024 / 1024).toFixed(2)} MB`);
 
@@ -425,29 +555,34 @@ async function downloadFromGitHub(
     }
 
     const buffer = await fileRes.arrayBuffer();
-
-    // ファイル名を決定
-    const filename = plugin.filename || jarAsset.name;
     const filePath = join(downloadDir, filename);
 
     await Bun.write(filePath, buffer);
     console.log(`✅ ${plugin.name} をダウンロードしました: ${filename}`);
 
-    return filePath;
+    // キャッシュ更新
+    cache[versionKey] = {
+      version: versionId,
+      filename,
+      downloaded_at: new Date().toISOString(),
+    };
+
+    return { filePath, version: versionId, filename };
   } catch (error) {
     console.error(`❌ ${plugin.name} のダウンロードエラー:`, error);
     return null;
   }
 }
 
-// SFTPでファイルをアップロード
+// SFTPでファイルをアップロード（変更がないファイルはスキップ）
 async function uploadToSftp(
   files: string[],
   sftpConfig: SftpConfig,
-): Promise<void> {
+): Promise<string[]> {
   console.log("\n🚀 SFTP転送を開始...");
 
   const sftp = new SftpClient();
+  const uploadedFiles: string[] = [];
 
   try {
     // 接続設定
@@ -477,14 +612,37 @@ async function uploadToSftp(
       // ディレクトリが既に存在する場合はエラーを無視
     }
 
-    // ファイルをアップロード
+    // リモートファイル一覧を取得してサイズマップを作成
+    const remoteFiles = await sftp.list(sftpConfig.remote_path);
+    const remoteSizeMap = new Map<string, number>();
+    for (const f of remoteFiles) {
+      if (f.type === "-") {
+        remoteSizeMap.set(f.name, f.size);
+      }
+    }
+
+    // ファイルをアップロード（サイズが同じならスキップ）
     for (const filePath of files) {
       const filename = basename(filePath);
       const remotePath = `${sftpConfig.remote_path}/${filename}`;
+      const localSize = Bun.file(filePath).size;
+      const remoteSize = remoteSizeMap.get(filename);
+
+      if (remoteSize !== undefined && remoteSize === localSize) {
+        console.log(`⏭️  ${filename} は変更なし（スキップ）`);
+        continue;
+      }
 
       console.log(`📤 ${filename} をアップロード中...`);
       await sftp.put(filePath, remotePath);
       console.log(`✅ ${filename} をアップロードしました`);
+      uploadedFiles.push(filePath);
+    }
+
+    if (uploadedFiles.length === 0) {
+      console.log("✅ すべてのプラグインは最新です。アップロード不要。");
+    } else {
+      console.log(`✅ ${uploadedFiles.length}個のプラグインをアップロードしました`);
     }
   } catch (error) {
     console.error("❌ SFTP転送エラー:", error);
@@ -492,6 +650,8 @@ async function uploadToSftp(
   } finally {
     await sftp.end();
   }
+
+  return uploadedFiles;
 }
 
 // リモートの古いプラグインをクリーンアップ
@@ -636,25 +796,29 @@ async function main() {
     await mkdir(config.download_dir, { recursive: true });
   }
 
+  // キャッシュを読み込む
+  const cache = await loadCache(config.download_dir);
+
   // プラグインをダウンロード
   const downloadedFiles: string[] = [];
 
   for (const plugin of config.plugins) {
-    let filePath: string | null = null;
+    let result: DownloadResult | null = null;
 
     if (plugin.source === "modrinth") {
-      filePath = await downloadFromModrinth(
+      result = await downloadFromModrinth(
         plugin,
         config.minecraft_version,
         config.loader_preference,
         config.download_dir,
+        cache,
       );
     } else if (plugin.source === "spigot") {
-      filePath = await downloadFromSpigot(plugin, config.download_dir);
+      result = await downloadFromSpigot(plugin, config.download_dir, cache);
     } else if (plugin.source === "url") {
-      filePath = await downloadFromUrl(plugin, config.download_dir);
+      result = await downloadFromUrl(plugin, config.download_dir, cache);
     } else if (plugin.source === "github") {
-      filePath = await downloadFromGitHub(plugin, config.download_dir);
+      result = await downloadFromGitHub(plugin, config.download_dir, cache);
     } else {
       // Exhaustiveness check
       const _exhaustiveCheck: never = plugin;
@@ -662,16 +826,19 @@ async function main() {
       continue;
     }
 
-    if (filePath) {
-      downloadedFiles.push(filePath);
+    if (result) {
+      downloadedFiles.push(result.filePath);
     }
 
     // レート制限を避けるため少し待機
     await Bun.sleep(500);
   }
 
+  // キャッシュを保存
+  await saveCache(config.download_dir, cache);
+
   console.log(
-    `\n✅ ${downloadedFiles.length}個のプラグインをダウンロードしました`,
+    `\n✅ ${downloadedFiles.length}個のプラグインを処理しました`,
   );
 
   // SFTPでアップロード
@@ -679,7 +846,7 @@ async function main() {
     try {
       await uploadToSftp(downloadedFiles, config.sftp);
 
-      // クリーンアップ
+      // クリーンアップ（アップロードされたファイルだけでなく全ダウンロードファイルを保持対象にする）
       if (config.cleanup) {
         await cleanupOldPlugins(downloadedFiles, config.sftp, config.cleanup);
       }
