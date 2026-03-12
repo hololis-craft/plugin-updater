@@ -1,0 +1,78 @@
+name: 'Plugin Updater'
+description: 'Download Minecraft plugins from Modrinth/Spigot/GitHub/URL and upload via SFTP'
+
+inputs:
+  config-path:
+    description: 'Path to plugin config YAML (relative to caller repository root)'
+    required: true
+  sftp-host:
+    description: 'SFTP host (overrides config)'
+    required: false
+  sftp-port:
+    description: 'SFTP port (overrides config)'
+    required: false
+  sftp-username:
+    description: 'SFTP username (overrides config)'
+    required: false
+  sftp-password:
+    description: 'SFTP password (overrides config)'
+    required: false
+  sftp-private-key:
+    description: 'SSH private key contents (from GitHub Secrets)'
+    required: false
+  github-token:
+    description: 'GitHub API token for rate limit avoidance'
+    required: false
+  modrinth-api-key:
+    description: 'Modrinth API key'
+    required: false
+  bun-version:
+    description: 'Bun version to install'
+    required: false
+    default: 'latest'
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup Bun
+      uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: ${{ inputs.bun-version }}
+
+    - name: Install dependencies
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: bun install --frozen-lockfile
+
+    - name: Setup SSH key
+      if: inputs.sftp-private-key != ''
+      shell: bash
+      id: ssh-key
+      run: |
+        SSH_KEY_FILE=$(mktemp)
+        echo "${{ inputs.sftp-private-key }}" > "$SSH_KEY_FILE"
+        chmod 600 "$SSH_KEY_FILE"
+        echo "path=$SSH_KEY_FILE" >> "$GITHUB_OUTPUT"
+
+    - name: Run plugin updater
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        SFTP_HOST: ${{ inputs.sftp-host }}
+        SFTP_PORT: ${{ inputs.sftp-port }}
+        SFTP_USERNAME: ${{ inputs.sftp-username }}
+        SFTP_PASSWORD: ${{ inputs.sftp-password }}
+        SFTP_PRIVATE_KEY_PATH: ${{ steps.ssh-key.outputs.path }}
+        GITHUB_TOKEN: ${{ inputs.github-token }}
+        MODRINTH_API_KEY: ${{ inputs.modrinth-api-key }}
+      run: |
+        CONFIG_PATH="${{ inputs.config-path }}"
+        if [[ ! "$CONFIG_PATH" = /* ]]; then
+          CONFIG_PATH="${GITHUB_WORKSPACE}/${CONFIG_PATH}"
+        fi
+        bun index.ts "$CONFIG_PATH"
+
+    - name: Cleanup SSH key
+      if: always() && steps.ssh-key.outputs.path != ''
+      shell: bash
+      run: rm -f "${{ steps.ssh-key.outputs.path }}"
