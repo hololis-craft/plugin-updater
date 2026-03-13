@@ -1,0 +1,180 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.com/plugin-updater/plugin-config.schema.json",
+  "title": "Plugin Updater Config",
+  "type": "object",
+  "properties": {
+    "loader_preference": {
+      "type": "array",
+      "description": "Modrinth assets are selected in this loader priority order.",
+      "default": ["paper", "purpur", "bukkit", "spigot"],
+      "items": {
+        "type": "string"
+      }
+    },
+    "minecraft_version": {
+      "type": "string"
+    },
+    "download_dir": {
+      "type": "string"
+    },
+    "plugins": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          { "$ref": "#/$defs/modrinthPlugin" },
+          { "$ref": "#/$defs/spigotPlugin" },
+          { "$ref": "#/$defs/urlPlugin" },
+          { "$ref": "#/$defs/githubPlugin" }
+        ]
+      }
+    },
+    "sftp": {
+      "$ref": "#/$defs/sftp"
+    },
+    "cleanup": {
+      "$ref": "#/$defs/cleanup"
+    }
+  },
+  "required": ["minecraft_version", "download_dir", "plugins", "sftp"],
+  "$defs": {
+    "pluginBase": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": ["name"]
+    },
+    "modrinthPlugin": {
+      "allOf": [
+        { "$ref": "#/$defs/pluginBase" },
+        {
+          "type": "object",
+          "properties": {
+            "source": {
+              "const": "modrinth"
+            },
+            "project_id": {
+              "type": "string"
+            },
+            "version": {
+              "type": "string"
+            },
+            "game_version_check": {
+              "type": "boolean",
+              "default": true
+            }
+          },
+          "required": ["source", "project_id"]
+        }
+      ]
+    },
+    "spigotPlugin": {
+      "allOf": [
+        { "$ref": "#/$defs/pluginBase" },
+        {
+          "type": "object",
+          "properties": {
+            "source": {
+              "const": "spigot"
+            },
+            "resource_id": {
+              "type": "string"
+            }
+          },
+          "required": ["source", "resource_id"]
+        }
+      ]
+    },
+    "urlPlugin": {
+      "allOf": [
+        { "$ref": "#/$defs/pluginBase" },
+        {
+          "type": "object",
+          "properties": {
+            "source": {
+              "const": "url"
+            },
+            "url": {
+              "type": "string",
+              "format": "uri"
+            },
+            "filename": {
+              "type": "string"
+            }
+          },
+          "required": ["source", "url"]
+        }
+      ]
+    },
+    "githubPlugin": {
+      "allOf": [
+        { "$ref": "#/$defs/pluginBase" },
+        {
+          "type": "object",
+          "properties": {
+            "source": {
+              "const": "github"
+            },
+            "repo": {
+              "type": "string",
+              "description": "GitHub repository in owner/repo format."
+            },
+            "tag": {
+              "type": "string"
+            },
+            "asset_pattern": {
+              "type": "string"
+            },
+            "filename": {
+              "type": "string"
+            }
+          },
+          "required": ["source", "repo"]
+        }
+      ]
+    },
+    "sftp": {
+      "type": "object",
+      "properties": {
+        "host": {
+          "type": "string"
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "username": {
+          "type": "string"
+        },
+        "password": {
+          "type": "string"
+        },
+        "private_key_path": {
+          "type": "string"
+        },
+        "remote_path": {
+          "type": "string"
+        }
+      },
+      "required": ["host", "port", "username", "remote_path"]
+    },
+    "cleanup": {
+      "type": "object",
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "keep_patterns": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "required": ["enabled"]
+    }
+  }
+}
