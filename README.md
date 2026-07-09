@@ -48,6 +48,11 @@ plugins:
     repo: "username/repository"
     tag: "latest"
 
+  # ローカルディレクトリからアップロード
+  - name: "LocalPlugins"
+    source: "local"
+    path: "./local-plugins"
+
 # Pterodactyl SFTP設定
 sftp:
   host: "sftp.example.com"
@@ -89,6 +94,7 @@ bun index.ts my-plugins.yaml
 - ✅ Spigot (Spiget API)からプラグインをダウンロード
 - ✅ GitHub Releasesから最新版を自動取得
 - ✅ 任意のURLから直接ダウンロード
+- ✅ 指定したローカルディレクトリ内のプラグインをアップロード
 - ✅ Minecraftバージョンに適合するバージョンを自動選択
 - ✅ SFTPでPterodactylサーバーに自動転送
 - ✅ 古いプラグインの自動クリーンアップ
@@ -209,6 +215,24 @@ GitHub Releasesから最新版または特定のタグのリリースを自動�
 - プライベートリポジトリはサポートされていません
 - リリースにアセットが含まれていない場合はダウンロードできません
 
+### Local（ローカルディレクトリ）
+
+指定したローカルディレクトリにあるプラグインを、ダウンロード済みプラグインと同じ SFTP 転送先へアップロードできます。
+
+```yaml
+- name: "LocalPlugins"
+  source: "local"
+  path: "./local-plugins"       # .jar を置いたディレクトリ
+  # pattern: ".*\\.jar$"        # オプション: 対象ファイルの正規表現
+  # recursive: false            # オプション: サブディレクトリも検索する
+```
+
+- `path`: アップロードしたい `.jar` ファイルを置いたディレクトリ
+- `pattern`: （オプション）対象ファイルを選ぶ正規表現。省略時は `.jar` ファイルのみ
+- `recursive`: （オプション）`true` にするとサブディレクトリも検索
+
+検出されたファイルはキャッシュ用の `download_dir` にはコピーされず、元の場所から直接アップロードされます。
+
 ## SFTP接続
 
 Pterodactylのゲームサーバーパネルから、SFTP接続情報を確認できます。
@@ -257,6 +281,7 @@ cleanup:
 3. **remove_old_versions が true の場合**: 同じプラグイン名の古いバージョンが削除されます
 
 例：
+
 - `EssentialsX-2.20.1.jar` をアップロード
 - サーバーに `EssentialsX-2.20.0.jar` が存在
 - → `EssentialsX-2.20.0.jar` が自動削除されます

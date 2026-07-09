@@ -35,10 +35,17 @@ plugins:
   # GitHub Releasesから最新版
   - name: "MyPlugin"
     source: "github"
-    repo: "username/repository"  # GitHubリポジトリ（owner/repo形式）
-    tag: "latest"  # "latest"または特定のタグ（例: "v1.0.0"）
+    repo: "username/repository" # GitHubリポジトリ（owner/repo形式）
+    tag: "latest" # "latest"または特定のタグ（例: "v1.0.0"）
     # asset_pattern: ".*\\.jar$"  # オプション: assetの正規表現パターン
     # filename: "MyPlugin.jar"  # オプション: 保存するファイル名
+
+  # ローカルディレクトリからアップロード
+  - name: "LocalPlugins"
+    source: "local"
+    path: "./local-plugins"
+    # pattern: ".*\\.jar$"  # オプション: 対象ファイルの正規表現
+    # recursive: false      # オプション: サブディレクトリも検索する
 
 # Pterodactyl SFTP設定
 sftp:
@@ -58,8 +65,8 @@ cleanup:
   # 保持するファイルのパターン（正規表現）
   # 新しくダウンロードしたファイル以外で、これらのパターンに一致するファイルは削除されません
   keep_patterns:
-    - "^CustomPlugin-.*\\.jar$"  # カスタムプラグインは保持
-    - "^DoNotDelete.*\\.jar$"     # 削除しないプラグイン
+    - "^CustomPlugin-.*\\.jar$" # カスタムプラグインは保持
+    - "^DoNotDelete.*\\.jar$" # 削除しないプラグイン
 
   # ダウンロードしたプラグインの古いバージョンを自動削除
   # trueの場合、例えば EssentialsX-2.20.0.jar があって EssentialsX-2.20.1.jar をダウンロードした場合、

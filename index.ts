@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { parse } from "yaml";
 import SftpClient, { type ConnectOptions } from "ssh2-sftp-client";
-import { mkdir } from "node:fs/promises";
+import { mkdir, readdir } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { existsSync } from "node:fs";
 import { z } from "zod";
@@ -69,11 +69,20 @@ const GitHubPluginSchema = z.object({
   filename: z.string().optional(),
 });
 
+const LocalPluginSchema = z.object({
+  name: z.string(),
+  source: z.literal("local"),
+  path: z.string(),
+  pattern: z.string().default(".*\\.jar$"),
+  recursive: z.boolean().default(false),
+});
+
 const PluginSchema = z.discriminatedUnion("source", [
   ModrinthPluginSchema,
   SpigotPluginSchema,
   UrlPluginSchema,
   GitHubPluginSchema,
+  LocalPluginSchema,
 ]);
 
 const SftpConfigSchema = z.object({
@@ -104,6 +113,7 @@ type ModrinthPlugin = z.infer<typeof ModrinthPluginSchema>;
 type SpigotPlugin = z.infer<typeof SpigotPluginSchema>;
 type UrlPlugin = z.infer<typeof UrlPluginSchema>;
 type GitHubPlugin = z.infer<typeof GitHubPluginSchema>;
+type LocalPlugin = z.infer<typeof LocalPluginSchema>;
 type SftpConfig = z.infer<typeof SftpConfigSchema>;
 type CleanupConfig = z.infer<typeof CleanupConfigSchema>;
 
@@ -258,8 +268,14 @@ async function downloadFromModrinth(
     if (cached && cached.version === versionId) {
       const cachedPath = join(downloadDir, cached.filename);
       if (await Bun.file(cachedPath).exists()) {
-        console.log(`⏭️  ${plugin.name} は最新です (${targetVersion.version_number})`);
-        return { filePath: cachedPath, version: versionId, filename: cached.filename };
+        console.log(
+          `⏭️  ${plugin.name} は最新です (${targetVersion.version_number})`,
+        );
+        return {
+          filePath: cachedPath,
+          version: versionId,
+          filename: cached.filename,
+        };
       }
     }
 
@@ -324,7 +340,11 @@ async function downloadFromSpigot(
       const cachedPath = join(downloadDir, cached.filename);
       if (await Bun.file(cachedPath).exists()) {
         console.log(`⏭️  ${plugin.name} は最新です (${resource.tag})`);
-        return { filePath: cachedPath, version: versionId, filename: cached.filename };
+        return {
+          filePath: cachedPath,
+          version: versionId,
+          filename: cached.filename,
+        };
       }
     }
 
@@ -410,7 +430,11 @@ async function downloadFromUrl(
         const cachedPath = join(downloadDir, cached.filename);
         if (await Bun.file(cachedPath).exists()) {
           console.log(`⏭️  ${plugin.name} は最新です`);
-          return { filePath: cachedPath, version: versionId, filename: cached.filename };
+          return {
+            filePath: cachedPath,
+            version: versionId,
+            filename: cached.filename,
+          };
         }
       }
     }
@@ -529,7 +553,11 @@ async function downloadFromGitHub(
       const cachedPath = join(downloadDir, cached.filename);
       if (await Bun.file(cachedPath).exists()) {
         console.log(`⏭️  ${plugin.name} は最新です (${release.tag_name})`);
-        return { filePath: cachedPath, version: versionId, filename: cached.filename };
+        return {
+          filePath: cachedPath,
+          version: versionId,
+          filename: cached.filename,
+        };
       }
     }
 
@@ -572,6 +600,64 @@ async function downloadFromGitHub(
     console.error(`❌ ${plugin.name} のダウンロードエラー:`, error);
     return null;
   }
+}
+
+// ローカルディレクトリからアップロード対象のプラグインを収集
+async function collectFromLocalDirectory(
+  plugin: LocalPlugin,
+): Promise<DownloadResult[]> {
+  console.log(`📦 Local: ${plugin.name}を確認中...`);
+
+  if (!existsSync(plugin.path)) {
+    console.error(`❌ ディレクトリが見つかりません: ${plugin.path}`);
+    return [];
+  }
+
+  const pattern = new RegExp(plugin.pattern);
+  const results: DownloadResult[] = [];
+
+  async function collect(directoryPath: string): Promise<void> {
+    const entries = await readdir(directoryPath, { withFileTypes: true });
+
+    for (const entry of entries) {
+      const filePath = join(directoryPath, entry.name);
+
+      if (entry.isDirectory()) {
+        if (plugin.recursive) {
+          await collect(filePath);
+        }
+        continue;
+      }
+
+      if (!entry.isFile() || !pattern.test(entry.name)) {
+        continue;
+      }
+
+      results.push({
+        filePath,
+        version: String(Bun.file(filePath).lastModified),
+        filename: entry.name,
+      });
+    }
+  }
+
+  try {
+    await collect(plugin.path);
+  } catch (error) {
+    console.error(`❌ ${plugin.name} のローカルファイル収集エラー:`, error);
+    return [];
+  }
+
+  if (results.length === 0) {
+    console.log(`⚠️  ${plugin.path} に一致するプラグインがありません`);
+  } else {
+    console.log(`✅ ${results.length}個のローカルプラグインを検出しました`);
+    for (const result of results) {
+      console.log(`   ファイル: ${result.filename}`);
+    }
+  }
+
+  return results;
 }
 
 // SFTPでファイルをアップロード（変更がないファイルはスキップ）
@@ -642,7 +728,9 @@ async function uploadToSftp(
     if (uploadedFiles.length === 0) {
       console.log("✅ すべてのプラグインは最新です。アップロード不要。");
     } else {
-      console.log(`✅ ${uploadedFiles.length}個のプラグインをアップロードしました`);
+      console.log(
+        `✅ ${uploadedFiles.length}個のプラグインをアップロードしました`,
+      );
     }
   } catch (error) {
     console.error("❌ SFTP転送エラー:", error);
@@ -803,22 +891,36 @@ async function main() {
   const downloadedFiles: string[] = [];
 
   for (const plugin of config.plugins) {
-    let result: DownloadResult | null = null;
+    let results: DownloadResult[] = [];
 
     if (plugin.source === "modrinth") {
-      result = await downloadFromModrinth(
+      const result = await downloadFromModrinth(
         plugin,
         config.minecraft_version,
         config.loader_preference,
         config.download_dir,
         cache,
       );
+      if (result) results.push(result);
     } else if (plugin.source === "spigot") {
-      result = await downloadFromSpigot(plugin, config.download_dir, cache);
+      const result = await downloadFromSpigot(
+        plugin,
+        config.download_dir,
+        cache,
+      );
+      if (result) results.push(result);
     } else if (plugin.source === "url") {
-      result = await downloadFromUrl(plugin, config.download_dir, cache);
+      const result = await downloadFromUrl(plugin, config.download_dir, cache);
+      if (result) results.push(result);
     } else if (plugin.source === "github") {
-      result = await downloadFromGitHub(plugin, config.download_dir, cache);
+      const result = await downloadFromGitHub(
+        plugin,
+        config.download_dir,
+        cache,
+      );
+      if (result) results.push(result);
+    } else if (plugin.source === "local") {
+      results = await collectFromLocalDirectory(plugin);
     } else {
       // Exhaustiveness check
       const _exhaustiveCheck: never = plugin;
@@ -826,7 +928,7 @@ async function main() {
       continue;
     }
 
-    if (result) {
+    for (const result of results) {
       downloadedFiles.push(result.filePath);
     }
 
@@ -837,9 +939,7 @@ async function main() {
   // キャッシュを保存
   await saveCache(config.download_dir, cache);
 
-  console.log(
-    `\n✅ ${downloadedFiles.length}個のプラグインを処理しました`,
-  );
+  console.log(`\n✅ ${downloadedFiles.length}個のプラグインを処理しました`);
 
   // SFTPでアップロード
   if (downloadedFiles.length > 0) {
