@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { parse } from "yaml";
 import SftpClient, { type ConnectOptions } from "ssh2-sftp-client";
-import { mkdir, readdir } from "node:fs/promises";
+import { mkdir, readdir, realpath, stat } from "node:fs/promises";
 import { join, basename } from "node:path";
 import { existsSync } from "node:fs";
 import { z } from "zod";
@@ -615,21 +615,41 @@ async function collectFromLocalDirectory(
 
   const pattern = new RegExp(plugin.pattern);
   const results: DownloadResult[] = [];
+  const visitedDirectories = new Set<string>();
 
   async function collect(directoryPath: string): Promise<void> {
+    const realDirectoryPath = await realpath(directoryPath);
+    if (visitedDirectories.has(realDirectoryPath)) {
+      return;
+    }
+    visitedDirectories.add(realDirectoryPath);
+
     const entries = await readdir(directoryPath, { withFileTypes: true });
 
     for (const entry of entries) {
       const filePath = join(directoryPath, entry.name);
+      let isDirectory = entry.isDirectory();
+      let isFile = entry.isFile();
 
-      if (entry.isDirectory()) {
+      if (entry.isSymbolicLink()) {
+        try {
+          const targetStats = await stat(filePath);
+          isDirectory = targetStats.isDirectory();
+          isFile = targetStats.isFile();
+        } catch {
+          console.log(`   スキップ: ${entry.name} (リンク先を確認できません)`);
+          continue;
+        }
+      }
+
+      if (isDirectory) {
         if (plugin.recursive) {
           await collect(filePath);
         }
         continue;
       }
 
-      if (!entry.isFile() || !pattern.test(entry.name)) {
+      if (!isFile || !pattern.test(entry.name)) {
         continue;
       }
 
